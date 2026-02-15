@@ -2,8 +2,8 @@
 
 A Bloomberg Terminal parody - a terminal-based market data viewer built with Python and [Textual](https://textual.textualize.io/).
 
-![Boomberg Screenshot](screenshots/main.png)
-<!-- TODO: Add main screenshot -->
+<img width="1824" height="1323" alt="image" src="https://github.com/user-attachments/assets/f0f66624-c8f5-4b1b-a9eb-2fd162113d64" />
+
 
 ## Features
 
