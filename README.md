@@ -20,24 +20,6 @@ A terminal-based market data viewer built with Python and [Textual](https://text
 - **Price Charts** - ASCII-based historical price charts
 - **Multi-Currency Support** - Displays prices in local currency for international stocks (USD, EUR, GBP, JPY, etc.)
 
-## Screenshots
-
-### Quote View
-![Quote View](screenshots/quote.png)
-<!-- TODO: Add quote screenshot showing Q AAPL -->
-
-### World Indices (WEI)
-![World Indices](screenshots/wei.png)
-<!-- TODO: Add WEI command screenshot -->
-
-### Treasury Yields (WB)
-![Treasury Yields](screenshots/treasury.png)
-<!-- TODO: Add WB command screenshot with yield curve -->
-
-### Financial Statements (FI)
-![Financials](screenshots/financials.png)
-<!-- TODO: Add FI AAPL screenshot -->
-
 ## Installation
 
 ### Prerequisites
