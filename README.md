@@ -2,7 +2,7 @@
 <div align="center"><img width="450" alt="Boomberg" src="https://github.com/user-attachments/assets/47a79e99-b4db-4872-8fab-a192a0c4bb57" /></div>
 
 
-Real-time financial data, market news, and analytics terminal. Built with Python and [Textual](https://textual.textualize.io/).
+Real-time financial data, market news, and analytics. Built with Python and [Textual](https://textual.textualize.io/).
 
 <img width="1824" height="1323" alt="image" src="https://github.com/user-attachments/assets/f0f66624-c8f5-4b1b-a9eb-2fd162113d64" />
 
