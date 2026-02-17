@@ -192,4 +192,4 @@ MIT
 
 ## Disclaimer
 
-This is a parody project for educational purposes. Not affiliated with Bloomberg L.P. Not financial advice. Use at your own risk.
+Not affiliated with Bloomberg L.P. Not financial advice. Use at your own risk.

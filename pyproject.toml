@@ -1,7 +1,7 @@
 [project]
 name = "boomberg"
 version = "0.1.0"
-description = "A Bloomberg Terminal-like CLI application (parody)"
+description = "A terminal-based market data viewer"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
