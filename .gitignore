@@ -46,3 +46,8 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local data files
+*.json
+!package.json
+!package-lock.json

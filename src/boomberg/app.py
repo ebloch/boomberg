@@ -22,12 +22,15 @@ from boomberg.services.news import NewsService
 from boomberg.services.quotes import QuoteService
 from boomberg.services.search import SearchService
 from boomberg.services.watchlist import WatchlistService
+from boomberg.services.portfolio import PortfolioService
 from boomberg.storage.watchlist_store import WatchlistStore
+from boomberg.storage.portfolio_store import PortfolioStore
 from boomberg.ui.widgets.chart import ChartWidget
 from boomberg.ui.widgets.command_bar import CommandBar
 from boomberg.ui.widgets.quote_panel import QuotePanel, get_currency_symbol
 from boomberg.ui.widgets.ticker_tape import TickerTape
 from boomberg.ui.widgets.watchlist import WatchlistWidget
+from boomberg.ui.widgets.portfolio import PortfolioWidget
 
 
 class Boomberg(App):
@@ -56,6 +59,7 @@ class Boomberg(App):
         self._news_service: Optional[NewsService] = None
         self._search_service: Optional[SearchService] = None
         self._dashboard_service: Optional[DashboardService] = None
+        self._portfolio_service: Optional[PortfolioService] = None
         self._current_symbol: Optional[str] = None
 
     def compose(self) -> ComposeResult:
@@ -66,6 +70,7 @@ class Boomberg(App):
                 QuotePanel(id="quote-panel"),
                 ChartWidget(id="chart-widget"),
                 WatchlistWidget(id="watchlist-widget"),
+                PortfolioWidget(id="portfolio-widget"),
                 VerticalScroll(
                     Static(id="content-area"),
                     id="content-scroll",
@@ -97,6 +102,9 @@ class Boomberg(App):
         self._search_service = SearchService(self._client)
         self._dashboard_service = DashboardService(self._client, self._fred_client)
 
+        portfolio_store = PortfolioStore()
+        self._portfolio_service = PortfolioService(portfolio_store, self._client)
+
         # Focus command bar
         self.query_one(CommandBar).focus_input()
 
@@ -109,6 +117,7 @@ class Boomberg(App):
         # Hide widgets initially
         self.query_one("#chart-widget").display = False
         self.query_one("#watchlist-widget").display = False
+        self.query_one("#portfolio-widget").display = False
         self.query_one("#content-scroll").display = False
 
     async def on_unmount(self) -> None:
@@ -188,6 +197,25 @@ class Boomberg(App):
             self._show_forex()
         elif command == "ECST":
             self._show_economic_stats()
+        elif command == "P":
+            self._show_portfolio()
+        elif command == "PA" and len(args) >= 3:
+            # PA <symbol> <shares> <cost_basis>
+            try:
+                shares = float(args[1])
+                cost_basis = float(args[2])
+                self._add_to_portfolio(args[0], shares, cost_basis)
+            except ValueError:
+                self._show_message("Invalid format. Use: PA <SYMBOL> <SHARES> <COST>", error=True)
+        elif command == "PR" and args:
+            self._remove_from_portfolio(args[0])
+        elif command == "PU" and len(args) >= 2:
+            # PU <symbol> <shares>
+            try:
+                shares = float(args[1])
+                self._update_portfolio_shares(args[0], shares)
+            except ValueError:
+                self._show_message("Invalid format. Use: PU <SYMBOL> <SHARES>", error=True)
         elif command in ("?", "HELP"):
             self.action_show_help()
         else:
@@ -543,6 +571,57 @@ class Boomberg(App):
         except Exception as e:
             self._show_message(f"Error: {str(e)}", error=True)
 
+    @work(exclusive=True, group="portfolio")
+    async def _show_portfolio(self) -> None:
+        """Show the portfolio."""
+        try:
+            self._show_loading("Loading portfolio...")
+            holdings = await self._portfolio_service.get_portfolio_with_quotes()
+
+            portfolio_widget = self.query_one(PortfolioWidget)
+            portfolio_widget.update_holdings(holdings)
+            portfolio_widget.display = True
+
+            self.query_one(QuotePanel).display = False
+            self.query_one("#chart-widget").display = False
+            self.query_one("#watchlist-widget").display = False
+            self.query_one("#content-scroll").display = False
+        except APIError as e:
+            self._show_message(f"API error: {e.message}", error=True)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
+    @work(exclusive=True, group="portfolio")
+    async def _add_to_portfolio(self, symbol: str, shares: float, cost_basis: float) -> None:
+        """Add a holding to the portfolio."""
+        try:
+            self._portfolio_service.add_holding(symbol.upper(), shares, cost_basis)
+            self._show_message(f"Added {shares:.0f} shares of {symbol.upper()} at ${cost_basis:.2f}", error=False)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
+    @work(exclusive=True, group="portfolio")
+    async def _remove_from_portfolio(self, symbol: str) -> None:
+        """Remove a holding from the portfolio."""
+        try:
+            self._portfolio_service.remove_holding(symbol.upper())
+            self._show_message(f"Removed {symbol.upper()} from portfolio", error=False)
+        except KeyError:
+            self._show_message(f"{symbol.upper()} is not in portfolio", error=True)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
+    @work(exclusive=True, group="portfolio")
+    async def _update_portfolio_shares(self, symbol: str, shares: float) -> None:
+        """Update share count for a holding."""
+        try:
+            self._portfolio_service.update_shares(symbol.upper(), shares)
+            self._show_message(f"Updated {symbol.upper()} to {shares:.0f} shares", error=False)
+        except KeyError:
+            self._show_message(f"{symbol.upper()} is not in portfolio", error=True)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
     @work(exclusive=True, group="search")
     async def _search_symbols(self, query: str) -> None:
         """Search for symbols."""
@@ -706,6 +785,12 @@ class Boomberg(App):
   W               Show watchlist
   WA <SYMBOL>     Add to watchlist
   WD <SYMBOL>     Remove from watchlist
+
+[bold yellow]Portfolio Commands:[/bold yellow]
+  P               Show portfolio
+  PA <SYM> <SHARES> <COST>  Add holding (e.g., PA AAPL 100 150.00)
+  PR <SYMBOL>     Remove holding from portfolio
+  PU <SYM> <SHARES>  Update share count (e.g., PU AAPL 150)
 
 [bold yellow]Keyboard Shortcuts:[/bold yellow]
   ?               Toggle this help
