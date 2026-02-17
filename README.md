@@ -11,6 +11,7 @@
 
 - **Real-time Stock Quotes** - Get live quotes for any stock symbol
 - **Watchlists** - Create and manage multiple watchlists with persistent storage
+- **Portfolio Tracking** - Track holdings with cost basis, gain/loss, and performance (1D, MTD, YTD)
 - **Financial Statements** - View income statements, balance sheets, and cash flow statements
 - **World Equity Indices** - Track major indices across US, Europe, and Asia-Pacific
 - **Treasury Yields** - US Treasury rates with yield curve visualization
@@ -112,6 +113,20 @@ Chart periods: `1D`, `1W`, `1M`, `3M`, `6M`, `1Y`, `5Y`
 | `WR <symbol>` | Remove from watchlist | `WR AAPL` |
 | `WC <name>` | Create new watchlist | `WC dividends` |
 | `WD <name>` | Delete watchlist | `WD old` |
+
+### Portfolio
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `P` | Show portfolio | `P` |
+| `PA <symbol> <shares> <cost>` | Add holding | `PA AAPL 100 150.00` |
+| `PR <symbol>` | Remove holding | `PR AAPL` |
+| `PU <symbol> <shares>` | Update share count | `PU AAPL 150` |
+
+Portfolio data is stored locally in `~/.boomberg/portfolio.json`. The portfolio view displays:
+- Current price and total value
+- Gain/loss ($ and %)
+- 1-day, month-to-date, and year-to-date performance
 
 ### Search & Help
 
