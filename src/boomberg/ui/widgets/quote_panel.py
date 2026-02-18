@@ -1,5 +1,6 @@
 """Quote display panel widget."""
 
+from dataclasses import dataclass
 from typing import Optional
 
 from rich.console import RenderableType
@@ -8,6 +9,15 @@ from rich.text import Text
 from textual.widgets import Static
 
 from boomberg.api.models import Quote
+
+
+@dataclass
+class PriceChanges:
+    """Price changes over various time periods."""
+    change_3m: float = 0.0
+    change_ytd: float = 0.0
+    change_5y: float = 0.0
+    change_10y: float = 0.0
 
 # Exchange to currency symbol mapping
 EXCHANGE_CURRENCY = {
@@ -110,10 +120,12 @@ class QuotePanel(Static):
     def __init__(self, quote: Optional[Quote] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._quote = quote
+        self._price_changes: Optional[PriceChanges] = None
 
-    def update_quote(self, quote: Quote) -> None:
+    def update_quote(self, quote: Quote, price_changes: Optional[PriceChanges] = None) -> None:
         """Update the displayed quote."""
         self._quote = quote
+        self._price_changes = price_changes
         self.remove_class("up", "down")
         if quote.change > 0:
             self.add_class("up")
@@ -159,10 +171,33 @@ class QuotePanel(Static):
             table.add_row("P/E Ratio", f"{q.pe:.2f}")
         if q.eps:
             table.add_row("EPS", f"{currency}{q.eps:.2f}")
+
+        # Price changes over time
+        if self._price_changes:
+            pc = self._price_changes
+            changes_text = Text()
+            changes_text.append(self._format_change("3M", pc.change_3m))
+            changes_text.append("  ")
+            changes_text.append(self._format_change("YTD", pc.change_ytd))
+            changes_text.append("  ")
+            changes_text.append(self._format_change("5Y", pc.change_5y))
+            changes_text.append("  ")
+            changes_text.append(self._format_change("10Y", pc.change_10y))
+            table.add_row("Performance", changes_text)
+
         if q.exchange:
             table.add_row("Exchange", q.exchange)
 
         return table
+
+    def _format_change(self, label: str, value: float) -> Text:
+        """Format a labeled percentage change."""
+        style = "green" if value >= 0 else "red"
+        sign = "+" if value >= 0 else ""
+        text = Text()
+        text.append(f"{label}: ", style="dim")
+        text.append(f"{sign}{value:.1f}%", style=style)
+        return text
 
     def _format_market_cap(self, market_cap: float, currency: str = "$") -> str:
         """Format market cap in human-readable form."""

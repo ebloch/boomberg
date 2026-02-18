@@ -200,13 +200,13 @@ class Boomberg(App):
         elif command == "P":
             self._show_portfolio()
         elif command == "PA" and len(args) >= 3:
-            # PA <symbol> <shares> <cost_basis>
+            # PA <symbol> <shares> <total_cost>
             try:
                 shares = float(args[1])
-                cost_basis = float(args[2])
-                self._add_to_portfolio(args[0], shares, cost_basis)
+                total_cost = float(args[2])
+                self._add_to_portfolio(args[0], shares, total_cost)
             except ValueError:
-                self._show_message("Invalid format. Use: PA <SYMBOL> <SHARES> <COST>", error=True)
+                self._show_message("Invalid format. Use: PA <SYMBOL> <SHARES> <TOTAL_COST>", error=True)
         elif command == "PR" and args:
             self._remove_from_portfolio(args[0])
         elif command == "PU" and len(args) >= 2:
@@ -224,17 +224,35 @@ class Boomberg(App):
     @work(exclusive=True, group="quote")
     async def _show_quote(self, symbol: str) -> None:
         """Show quote for a symbol."""
+        from boomberg.ui.widgets.quote_panel import PriceChanges
+
         try:
             self._show_loading(f"Loading quote for {symbol}...")
             quote = await self._quote_service.get_quote(symbol)
             self._current_symbol = symbol.upper()
 
+            # Fetch price changes
+            price_changes = None
+            try:
+                changes = await self._client.get_stock_price_changes([symbol.upper()])
+                if changes:
+                    pc = changes[0]
+                    price_changes = PriceChanges(
+                        change_3m=pc.three_month or 0.0,
+                        change_ytd=pc.ytd or 0.0,
+                        change_5y=pc.five_year or 0.0,
+                        change_10y=pc.ten_year or 0.0,
+                    )
+            except Exception:
+                pass  # Continue without price changes if fetch fails
+
             quote_panel = self.query_one(QuotePanel)
-            quote_panel.update_quote(quote)
+            quote_panel.update_quote(quote, price_changes)
             quote_panel.display = True
 
             self.query_one("#chart-widget").display = False
             self.query_one("#watchlist-widget").display = False
+            self.query_one("#portfolio-widget").display = False
             self.query_one("#content-scroll").display = False
         except SymbolNotFoundError as e:
             self._show_message(f"Symbol not found: {e.symbol}", error=True)
@@ -258,6 +276,7 @@ class Boomberg(App):
 
             self.query_one(QuotePanel).display = False
             self.query_one("#watchlist-widget").display = False
+            self.query_one("#portfolio-widget").display = False
             self.query_one("#content-scroll").display = False
         except SymbolNotFoundError as e:
             self._show_message(f"Symbol not found: {e.symbol}", error=True)
@@ -527,7 +546,7 @@ class Boomberg(App):
         """Show the watchlist."""
         try:
             self._show_loading("Loading watchlist...")
-            quotes = await self._watchlist_service.get_watchlist_quotes("default")
+            quotes = await self._watchlist_service.get_watchlist_with_changes("default")
 
             watchlist = self.query_one(WatchlistWidget)
             watchlist.update_quotes(quotes)
@@ -535,6 +554,7 @@ class Boomberg(App):
 
             self.query_one(QuotePanel).display = False
             self.query_one("#chart-widget").display = False
+            self.query_one("#portfolio-widget").display = False
             self.query_one("#content-scroll").display = False
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
@@ -549,6 +569,7 @@ class Boomberg(App):
             if added:
                 self._show_message(f"Added {symbol.upper()} to watchlist", error=False)
                 self._load_ticker_data()  # Refresh ticker
+                await self._refresh_watchlist_if_visible()
             else:
                 self._show_message(f"{symbol.upper()} is already in watchlist", error=True)
         except APIError as e:
@@ -564,12 +585,20 @@ class Boomberg(App):
             if removed:
                 self._show_message(f"Removed {symbol.upper()} from watchlist", error=False)
                 self._load_ticker_data()  # Refresh ticker
+                await self._refresh_watchlist_if_visible()
             else:
                 self._show_message(f"{symbol.upper()} is not in watchlist", error=True)
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
         except Exception as e:
             self._show_message(f"Error: {str(e)}", error=True)
+
+    async def _refresh_watchlist_if_visible(self) -> None:
+        """Refresh watchlist view if it's currently visible."""
+        watchlist_widget = self.query_one(WatchlistWidget)
+        if watchlist_widget.display:
+            quotes = await self._watchlist_service.get_watchlist_with_changes("default")
+            watchlist_widget.update_quotes(quotes)
 
     @work(exclusive=True, group="portfolio")
     async def _show_portfolio(self) -> None:
@@ -592,11 +621,12 @@ class Boomberg(App):
             self._show_message(f"Error: {str(e)}", error=True)
 
     @work(exclusive=True, group="portfolio")
-    async def _add_to_portfolio(self, symbol: str, shares: float, cost_basis: float) -> None:
+    async def _add_to_portfolio(self, symbol: str, shares: float, total_cost: float) -> None:
         """Add a holding to the portfolio."""
         try:
-            self._portfolio_service.add_holding(symbol.upper(), shares, cost_basis)
-            self._show_message(f"Added {shares:.0f} shares of {symbol.upper()} at ${cost_basis:.2f}", error=False)
+            self._portfolio_service.add_holding(symbol.upper(), shares, total_cost)
+            self._show_message(f"Added {shares:.0f} shares of {symbol.upper()} (total cost: ${total_cost:,.2f})", error=False)
+            await self._refresh_portfolio_if_visible()
         except Exception as e:
             self._show_message(f"Error: {str(e)}", error=True)
 
@@ -606,6 +636,7 @@ class Boomberg(App):
         try:
             self._portfolio_service.remove_holding(symbol.upper())
             self._show_message(f"Removed {symbol.upper()} from portfolio", error=False)
+            await self._refresh_portfolio_if_visible()
         except KeyError:
             self._show_message(f"{symbol.upper()} is not in portfolio", error=True)
         except Exception as e:
@@ -617,10 +648,18 @@ class Boomberg(App):
         try:
             self._portfolio_service.update_shares(symbol.upper(), shares)
             self._show_message(f"Updated {symbol.upper()} to {shares:.0f} shares", error=False)
+            await self._refresh_portfolio_if_visible()
         except KeyError:
             self._show_message(f"{symbol.upper()} is not in portfolio", error=True)
         except Exception as e:
             self._show_message(f"Error: {str(e)}", error=True)
+
+    async def _refresh_portfolio_if_visible(self) -> None:
+        """Refresh portfolio view if it's currently visible."""
+        portfolio_widget = self.query_one(PortfolioWidget)
+        if portfolio_widget.display:
+            holdings = await self._portfolio_service.get_portfolio_with_quotes()
+            portfolio_widget.update_holdings(holdings)
 
     @work(exclusive=True, group="search")
     async def _search_symbols(self, query: str) -> None:
@@ -729,6 +768,7 @@ class Boomberg(App):
         self.query_one(QuotePanel).display = False
         self.query_one("#chart-widget").display = False
         self.query_one("#watchlist-widget").display = False
+        self.query_one("#portfolio-widget").display = False
 
         content_area = self.query_one("#content-area", Static)
         content_area.update(content)
@@ -788,7 +828,7 @@ class Boomberg(App):
 
 [bold yellow]Portfolio Commands:[/bold yellow]
   P               Show portfolio
-  PA <SYM> <SHARES> <COST>  Add holding (e.g., PA AAPL 100 150.00)
+  PA <SYM> <SHARES> <TOTAL_COST>  Add holding (e.g., PA AAPL 100 15000)
   PR <SYMBOL>     Remove holding from portfolio
   PU <SYM> <SHARES>  Update share count (e.g., PU AAPL 150)
 

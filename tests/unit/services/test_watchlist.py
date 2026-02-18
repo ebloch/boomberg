@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from boomberg.api.models import Quote
-from boomberg.services.watchlist import WatchlistService
+from boomberg.api.models import Quote, StockPriceChange, FinancialRatiosTTM
+from boomberg.services.watchlist import WatchlistService, WatchlistQuote
 
 
 class TestWatchlistService:
@@ -163,3 +163,46 @@ class TestWatchlistService:
     async def test_symbol_exists_case_insensitive(self, service):
         """Test symbol existence check is case insensitive."""
         assert await service.symbol_exists("aapl") is True
+
+    @pytest.mark.asyncio
+    async def test_get_watchlist_with_changes(self, service, mock_client):
+        """Test getting watchlist with price change data from FMP."""
+        quotes = [
+            Quote(symbol="AAPL", name="Apple", price=185.0, change=2.5, changePercentage=1.37),
+            Quote(symbol="MSFT", name="Microsoft", price=405.0, change=-3.0, changePercentage=-0.74),
+        ]
+        price_changes = [
+            StockPriceChange(symbol="AAPL", **{"1D": 1.37, "1M": 5.2, "ytd": 12.5, "3Y": 45.0}),
+            StockPriceChange(symbol="MSFT", **{"1D": -0.74, "1M": 3.1, "ytd": 8.3, "3Y": 120.0}),
+        ]
+        mock_client.get_quotes = AsyncMock(return_value=quotes)
+        mock_client.get_stock_price_changes = AsyncMock(return_value=price_changes)
+
+        # Mock PE ratios from ratios-ttm endpoint
+        async def mock_ratios(symbol):
+            if symbol == "AAPL":
+                return FinancialRatiosTTM(symbol="AAPL", priceToEarningsRatioTTM=28.5)
+            else:
+                return FinancialRatiosTTM(symbol="MSFT", priceToEarningsRatioTTM=35.2)
+        mock_client.get_financial_ratios_ttm = AsyncMock(side_effect=mock_ratios)
+
+        result = await service.get_watchlist_with_changes("default")
+
+        assert len(result) == 2
+
+        # Check AAPL
+        aapl = next(q for q in result if q.symbol == "AAPL")
+        assert aapl.price == 185.0
+        assert aapl.change_1d == 1.37
+        assert aapl.change_1m == 5.2
+        assert aapl.change_ytd == 12.5
+        assert aapl.change_3y == 45.0
+        assert aapl.pe == 28.5
+
+        # Check MSFT PE
+        msft = next(q for q in result if q.symbol == "MSFT")
+        assert msft.pe == 35.2
+
+        # Verify API calls were made
+        mock_client.get_quotes.assert_called_once()
+        mock_client.get_stock_price_changes.assert_called_once()
