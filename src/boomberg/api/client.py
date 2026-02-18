@@ -17,6 +17,7 @@ from boomberg.api.models import (
     NewsArticle,
     Quote,
     SearchResult,
+    StockPriceChange,
 )
 from boomberg.config import Settings, get_settings
 
@@ -87,6 +88,31 @@ class FMPClient:
 
         results = await asyncio.gather(*[fetch_quote(s) for s in symbols])
         return [q for q in results if q is not None]
+
+    async def get_stock_price_changes(self, symbols: list[str]) -> list[StockPriceChange]:
+        """Get price change percentages for multiple symbols.
+
+        Returns price changes over various time periods (1D, 5D, 1M, YTD, 1Y, etc.)
+        directly from FMP without needing to calculate from historical prices.
+        """
+        if not symbols:
+            return []
+
+        import asyncio
+
+        async def fetch_change(symbol: str) -> StockPriceChange | None:
+            try:
+                params = {"symbol": symbol.upper()}
+                data = await self._get("/stock-price-change", params)
+                if not data or (isinstance(data, list) and len(data) == 0):
+                    return None
+                change_data = data[0] if isinstance(data, list) else data
+                return StockPriceChange.model_validate(change_data)
+            except Exception:
+                return None
+
+        results = await asyncio.gather(*[fetch_change(s) for s in symbols])
+        return [c for c in results if c is not None]
 
     async def get_historical_prices(
         self,

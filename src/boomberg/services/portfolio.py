@@ -41,29 +41,28 @@ class PortfolioService:
         """Get raw holdings data from store."""
         return self._store.load()
 
-    def add_holding(self, symbol: str, shares: float, cost_basis: float) -> None:
+    def add_holding(self, symbol: str, shares: float, total_cost: float) -> None:
         """Add or update a holding.
 
-        If the symbol already exists, calculates new average cost basis.
+        If the symbol already exists, adds shares and combines total cost.
         """
         symbol = symbol.upper()
         holdings = self._store.load()
 
         if symbol in holdings:
-            # Calculate weighted average cost basis
+            # Add to existing position
             existing = holdings[symbol]
-            total_shares = existing["shares"] + shares
-            total_cost = (existing["shares"] * existing["cost_basis"]) + (shares * cost_basis)
-            new_cost_basis = total_cost / total_shares
+            new_shares = existing["shares"] + shares
+            new_total_cost = existing["total_cost"] + total_cost
 
             holdings[symbol] = {
-                "shares": total_shares,
-                "cost_basis": new_cost_basis,
+                "shares": new_shares,
+                "total_cost": new_total_cost,
             }
         else:
             holdings[symbol] = {
                 "shares": shares,
-                "cost_basis": cost_basis,
+                "total_cost": total_cost,
             }
 
         self._store.save(holdings)
@@ -99,14 +98,17 @@ class PortfolioService:
 
         symbols = list(holdings.keys())
 
-        # Fetch current quotes
+        # Fetch current quotes and price changes in parallel
         quotes = await self._client.get_quotes(symbols)
         quote_map = {q.symbol: q for q in quotes}
 
-        # Calculate MTD and YTD dates
+        # Fetch precalculated price changes from FMP (includes YTD)
+        price_changes = await self._client.get_stock_price_changes(symbols)
+        price_change_map = {pc.symbol: pc for pc in price_changes}
+
+        # Calculate MTD dates (still need historical for MTD)
         today = date.today()
         mtd_start = today.replace(day=1)
-        ytd_start = today.replace(month=1, day=1)
 
         result = []
         for symbol, data in holdings.items():
@@ -115,10 +117,10 @@ class PortfolioService:
                 continue
 
             shares = data["shares"]
-            cost_basis = data["cost_basis"]
+            total_cost = data["total_cost"]
             current_price = quote.price
             total_value = shares * current_price
-            total_cost = shares * cost_basis
+            cost_basis = total_cost / shares if shares > 0 else 0  # Per-share cost for display
             gain_loss = total_value - total_cost
             gain_loss_percent = (gain_loss / total_cost * 100) if total_cost > 0 else 0
 
@@ -126,37 +128,39 @@ class PortfolioService:
             change_1d_value = shares * quote.change
             change_1d_pct = quote.change_percent
 
-            # Try to get MTD and YTD changes from historical data
+            # Get YTD from FMP's precalculated values
+            change_ytd_pct = 0.0
+            change_ytd_value = 0.0
+            price_change = price_change_map.get(symbol)
+            if price_change and price_change.ytd is not None:
+                change_ytd_pct = price_change.ytd
+                # Calculate YTD value: derive start price from current price and YTD %
+                # start_price = current_price / (1 + ytd_pct/100)
+                # ytd_value = shares * (current_price - start_price)
+                if change_ytd_pct != -100:  # Avoid division by zero
+                    ytd_start_price = current_price / (1 + change_ytd_pct / 100)
+                    change_ytd_value = shares * (current_price - ytd_start_price)
+
+            # Try to get MTD changes from historical data
             change_mtd_value = 0.0
             change_mtd_pct = 0.0
-            change_ytd_value = 0.0
-            change_ytd_pct = 0.0
 
             try:
-                # Fetch historical prices for MTD/YTD calculation
+                # Fetch historical prices for MTD calculation only
                 historical = await self._client.get_historical_prices(
-                    symbol, from_date=ytd_start, to_date=today
+                    symbol, from_date=mtd_start, to_date=today
                 )
                 if historical:
                     # Sort by date ascending
                     historical = sorted(historical, key=lambda x: x.date)
 
-                    # Find YTD start price (first trading day of year)
-                    ytd_start_price = historical[0].close if historical else current_price
-
                     # Find MTD start price (first trading day of month)
-                    mtd_prices = [h for h in historical if h.date >= mtd_start]
-                    mtd_start_price = mtd_prices[0].close if mtd_prices else current_price
+                    mtd_start_price = historical[0].close if historical else current_price
 
                     # Calculate MTD
                     if mtd_start_price > 0:
                         change_mtd_pct = ((current_price - mtd_start_price) / mtd_start_price) * 100
                         change_mtd_value = shares * (current_price - mtd_start_price)
-
-                    # Calculate YTD
-                    if ytd_start_price > 0:
-                        change_ytd_pct = ((current_price - ytd_start_price) / ytd_start_price) * 100
-                        change_ytd_value = shares * (current_price - ytd_start_price)
 
             except Exception:
                 # If historical data fails, leave as 0

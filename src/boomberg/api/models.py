@@ -273,3 +273,22 @@ class ForexQuote(BaseModel):
     high: float = Field(default=0.0)
     changes: float = Field(default=0.0)
     date: str = Field(default="")
+
+
+class StockPriceChange(BaseModel):
+    """Stock price change percentages over various time periods."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    symbol: str
+    one_day: Optional[float] = Field(default=None, alias="1D")
+    five_day: Optional[float] = Field(default=None, alias="5D")
+    one_month: Optional[float] = Field(default=None, alias="1M")
+    three_month: Optional[float] = Field(default=None, alias="3M")
+    six_month: Optional[float] = Field(default=None, alias="6M")
+    ytd: Optional[float] = Field(default=None, alias="ytd")
+    one_year: Optional[float] = Field(default=None, alias="1Y")
+    three_year: Optional[float] = Field(default=None, alias="3Y")
+    five_year: Optional[float] = Field(default=None, alias="5Y")
+    ten_year: Optional[float] = Field(default=None, alias="10Y")
+    max: Optional[float] = Field(default=None, alias="max")

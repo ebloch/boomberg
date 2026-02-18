@@ -4,7 +4,7 @@ import pytest
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
-from boomberg.api.models import Quote, HistoricalPrice
+from boomberg.api.models import Quote, HistoricalPrice, StockPriceChange
 from boomberg.services.portfolio import PortfolioService, PortfolioHolding
 
 
@@ -32,8 +32,8 @@ class TestPortfolioService:
     def sample_portfolio(self):
         """Sample portfolio data."""
         return {
-            "AAPL": {"shares": 100, "cost_basis": 150.00},
-            "GOOGL": {"shares": 50, "cost_basis": 140.00},
+            "AAPL": {"shares": 100, "total_cost": 15000.00},  # 100 shares * $150
+            "GOOGL": {"shares": 50, "total_cost": 7000.00},   # 50 shares * $140
         }
 
     @pytest.fixture
@@ -65,13 +65,13 @@ class TestPortfolioService:
     def test_add_holding(self, service, mock_store):
         """Test adding a new holding."""
         mock_store.load.return_value = {}
-        service.add_holding("AAPL", 100, 150.00)
+        service.add_holding("AAPL", 100, 15000.00)  # 100 shares, $15000 total cost
 
         mock_store.save.assert_called_once()
         saved_data = mock_store.save.call_args[0][0]
         assert "AAPL" in saved_data
         assert saved_data["AAPL"]["shares"] == 100
-        assert saved_data["AAPL"]["cost_basis"] == 150.00
+        assert saved_data["AAPL"]["total_cost"] == 15000.00
 
     def test_add_holding_uppercase(self, service, mock_store):
         """Test adding holding converts symbol to uppercase."""
@@ -82,15 +82,15 @@ class TestPortfolioService:
         assert "AAPL" in saved_data
 
     def test_add_to_existing_holding(self, service, mock_store, sample_portfolio):
-        """Test adding shares to existing holding updates average cost."""
+        """Test adding shares to existing holding combines total cost."""
         mock_store.load.return_value = sample_portfolio.copy()
-        # Adding 100 more shares at $200 to existing 100 shares at $150
-        service.add_holding("AAPL", 100, 200.00)
+        # Adding 100 more shares with $20000 total cost to existing 100 shares with $15000 total cost
+        service.add_holding("AAPL", 100, 20000.00)
 
         saved_data = mock_store.save.call_args[0][0]
         assert saved_data["AAPL"]["shares"] == 200
-        # Average cost: (100*150 + 100*200) / 200 = 175
-        assert saved_data["AAPL"]["cost_basis"] == 175.00
+        # Total cost: 15000 + 20000 = 35000
+        assert saved_data["AAPL"]["total_cost"] == 35000.00
 
     def test_remove_holding(self, service, mock_store, sample_portfolio):
         """Test removing a holding completely."""
@@ -114,13 +114,14 @@ class TestPortfolioService:
 
         saved_data = mock_store.save.call_args[0][0]
         assert saved_data["AAPL"]["shares"] == 150
-        assert saved_data["AAPL"]["cost_basis"] == 150.00  # Cost basis unchanged
+        assert saved_data["AAPL"]["total_cost"] == 15000.00  # Total cost unchanged
 
     @pytest.mark.asyncio
     async def test_get_portfolio_with_quotes(self, service, mock_store, mock_client, sample_portfolio, sample_quote):
         """Test getting portfolio with current quotes."""
         mock_store.load.return_value = sample_portfolio
         mock_client.get_quotes = AsyncMock(return_value=[sample_quote])
+        mock_client.get_stock_price_changes = AsyncMock(return_value=[])
         mock_client.get_historical_prices = AsyncMock(return_value=[])
 
         holdings = await service.get_portfolio_with_quotes()
@@ -132,16 +133,17 @@ class TestPortfolioService:
         assert aapl.shares == 100
         assert aapl.current_price == 175.00
         assert aapl.total_value == 17500.00  # 100 * 175
-        assert aapl.cost_basis == 150.00
-        assert aapl.total_cost == 15000.00  # 100 * 150
+        assert aapl.cost_basis == 150.00  # 15000 / 100 (calculated per-share)
+        assert aapl.total_cost == 15000.00  # From storage directly
         assert aapl.gain_loss == 2500.00  # 17500 - 15000
         assert aapl.gain_loss_percent == pytest.approx(16.67, rel=0.01)  # 2500/15000 * 100
 
     @pytest.mark.asyncio
     async def test_get_portfolio_calculates_daily_change(self, service, mock_store, mock_client, sample_portfolio, sample_quote):
         """Test portfolio calculates 1D change from quote."""
-        mock_store.load.return_value = {"AAPL": {"shares": 100, "cost_basis": 150.00}}
+        mock_store.load.return_value = {"AAPL": {"shares": 100, "total_cost": 15000.00}}
         mock_client.get_quotes = AsyncMock(return_value=[sample_quote])
+        mock_client.get_stock_price_changes = AsyncMock(return_value=[])
         mock_client.get_historical_prices = AsyncMock(return_value=[])
 
         holdings = await service.get_portfolio_with_quotes()
@@ -185,3 +187,82 @@ class TestPortfolioService:
         )
         assert holding.symbol == "AAPL"
         assert holding.total_value == 17500.00
+
+    @pytest.mark.asyncio
+    async def test_gain_loss_uses_total_cost_directly(self, service, mock_store, mock_client):
+        """Test that gain/loss uses total_cost from storage, not shares * cost_basis.
+
+        This tests the fix for the bug where entering total cost (e.g., PA CB 80 26624)
+        would be multiplied by shares again, causing wildly incorrect gain/loss.
+        """
+        # Store total_cost of $26,624 for 80 shares (per-share would be $332.80)
+        mock_store.load.return_value = {
+            "CB": {"shares": 80, "total_cost": 26624.00}
+        }
+
+        quote = Quote(
+            symbol="CB",
+            name="Chubb Limited",
+            price=331.89,
+            change=7.00,
+            changePercentage=2.14,
+            volume=1000000,
+            exchange="NYSE",
+        )
+        mock_client.get_quotes = AsyncMock(return_value=[quote])
+        mock_client.get_stock_price_changes = AsyncMock(return_value=[])
+        mock_client.get_historical_prices = AsyncMock(return_value=[])
+
+        holdings = await service.get_portfolio_with_quotes()
+        cb = holdings[0]
+
+        # total_value = 80 * 331.89 = 26,551.20
+        assert cb.total_value == pytest.approx(26551.20, rel=0.01)
+        # total_cost should be 26,624 (from storage, NOT 80 * 26624)
+        assert cb.total_cost == pytest.approx(26624.00, rel=0.01)
+        # gain_loss = 26551.20 - 26624 = -72.80
+        assert cb.gain_loss == pytest.approx(-72.80, rel=0.1)
+        # gain_loss_percent = -72.80 / 26624 * 100 = -0.27%
+        assert cb.gain_loss_percent == pytest.approx(-0.27, rel=0.1)
+
+    @pytest.mark.asyncio
+    async def test_ytd_uses_fmp_precalculated_value(self, service, mock_store, mock_client):
+        """Test that YTD uses FMP's precalculated stock-price-change value instead of calculating from historical."""
+        mock_store.load.return_value = {
+            "AAPL": {"shares": 100, "total_cost": 15000.00}
+        }
+
+        quote = Quote(
+            symbol="AAPL",
+            name="Apple Inc.",
+            price=175.00,
+            change=2.50,
+            changePercentage=1.45,
+            volume=50000000,
+            exchange="NASDAQ",
+        )
+
+        # FMP's precalculated YTD change
+        price_change = StockPriceChange(
+            symbol="AAPL",
+            ytd=12.5,  # 12.5% YTD return from FMP
+        )
+
+        mock_client.get_quotes = AsyncMock(return_value=[quote])
+        mock_client.get_stock_price_changes = AsyncMock(return_value=[price_change])
+        mock_client.get_historical_prices = AsyncMock(return_value=[])
+
+        holdings = await service.get_portfolio_with_quotes()
+        aapl = holdings[0]
+
+        # YTD % should come directly from FMP, not calculated
+        assert aapl.change_ytd_pct == 12.5
+
+        # YTD value = shares * price * (ytd_pct / 100) / (1 + ytd_pct / 100)
+        # Or more simply: price at YTD start = 175 / 1.125 = 155.56
+        # YTD value change = 100 * (175 - 155.56) = 1944.44
+        expected_ytd_value = 100 * (175.00 - (175.00 / 1.125))
+        assert aapl.change_ytd_value == pytest.approx(expected_ytd_value, rel=0.01)
+
+        # Verify get_stock_price_changes was called
+        mock_client.get_stock_price_changes.assert_called_once_with(["AAPL"])
