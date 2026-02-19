@@ -77,11 +77,11 @@ class NewsArticle(BaseModel):
 
     symbol: Optional[str] = Field(default="")
     title: str
-    text: str = Field(default="")
+    text: Optional[str] = Field(default="")
     published_date: datetime = Field(alias="publishedDate")
-    site: str = Field(default="")
-    url: str = Field(default="")
-    image: str = Field(default="")
+    site: Optional[str] = Field(default="")
+    url: Optional[str] = Field(default="")
+    image: Optional[str] = Field(default="")
 
 
 class SearchResult(BaseModel):

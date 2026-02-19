@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     fmp_base_url: str = "https://financialmodelingprep.com/stable"
     fred_api_key: str = ""
     fred_base_url: str = "https://api.stlouisfed.org/fred"
+    eodhd_api_key: str = ""
+    eodhd_base_url: str = "https://eodhd.com/api"
     refresh_interval: float = 10.0  # seconds between auto-refresh
     watchlist_path: str = str(get_default_data_dir() / "watchlists.json")
 

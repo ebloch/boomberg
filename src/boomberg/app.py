@@ -10,6 +10,7 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
 
 from boomberg.api.client import FMPClient
+from boomberg.api.eodhd_client import EODHDClient
 from boomberg.api.exceptions import APIError, SymbolNotFoundError
 from boomberg.api.fred_client import FREDClient
 from boomberg.api.models import Quote
@@ -31,6 +32,8 @@ from boomberg.ui.widgets.quote_panel import QuotePanel, get_currency_symbol
 from boomberg.ui.widgets.ticker_tape import TickerTape
 from boomberg.ui.widgets.watchlist import WatchlistWidget
 from boomberg.ui.widgets.portfolio import PortfolioWidget
+from boomberg.ui.widgets.snapshot import SnapshotWidget
+from boomberg.ui.widgets.bonds import BondsWidget
 
 
 class Boomberg(App):
@@ -51,6 +54,7 @@ class Boomberg(App):
         self._settings = settings or get_settings()
         self._client: Optional[FMPClient] = None
         self._fred_client: Optional[FREDClient] = None
+        self._eodhd_client: Optional[EODHDClient] = None
         self._quote_service: Optional[QuoteService] = None
         self._watchlist_service: Optional[WatchlistService] = None
         self._historical_service: Optional[HistoricalService] = None
@@ -61,6 +65,8 @@ class Boomberg(App):
         self._dashboard_service: Optional[DashboardService] = None
         self._portfolio_service: Optional[PortfolioService] = None
         self._current_symbol: Optional[str] = None
+        self._current_screen: Optional[str] = None
+        self._current_screen_args: tuple = ()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -71,6 +77,8 @@ class Boomberg(App):
                 ChartWidget(id="chart-widget"),
                 WatchlistWidget(id="watchlist-widget"),
                 PortfolioWidget(id="portfolio-widget"),
+                SnapshotWidget(id="snapshot-widget"),
+                BondsWidget(id="bonds-widget"),
                 VerticalScroll(
                     Static(id="content-area"),
                     id="content-scroll",
@@ -92,6 +100,11 @@ class Boomberg(App):
             self._fred_client = FREDClient(self._settings)
             await self._fred_client.__aenter__()
 
+        # Initialize EODHD client if API key is configured
+        if self._settings.eodhd_api_key:
+            self._eodhd_client = EODHDClient(self._settings)
+            await self._eodhd_client.__aenter__()
+
         store = WatchlistStore(self._settings.watchlist_path)
         self._quote_service = QuoteService(self._client)
         self._watchlist_service = WatchlistService(self._client, store)
@@ -100,7 +113,9 @@ class Boomberg(App):
         self._financials_service = FinancialsService(self._client)
         self._news_service = NewsService(self._client)
         self._search_service = SearchService(self._client)
-        self._dashboard_service = DashboardService(self._client, self._fred_client)
+        self._dashboard_service = DashboardService(
+            self._client, self._fred_client, self._eodhd_client
+        )
 
         portfolio_store = PortfolioStore()
         self._portfolio_service = PortfolioService(portfolio_store, self._client)
@@ -114,14 +129,24 @@ class Boomberg(App):
         # Auto-refresh ticker every 5 minutes
         self.set_interval(300, self._load_ticker_data)
 
+        # Auto-refresh current screen every 15 minutes
+        self.set_interval(900, self._refresh_current_screen)
+
         # Hide widgets initially
         self.query_one("#chart-widget").display = False
         self.query_one("#watchlist-widget").display = False
         self.query_one("#portfolio-widget").display = False
+        self.query_one("#snapshot-widget").display = False
+        self.query_one("#bonds-widget").display = False
         self.query_one("#content-scroll").display = False
+
+        # Show market snapshot on startup
+        self._show_market_snapshot()
 
     async def on_unmount(self) -> None:
         """Clean up when app unmounts."""
+        if self._eodhd_client:
+            await self._eodhd_client.__aexit__(None, None, None)
         if self._fred_client:
             await self._fred_client.__aexit__(None, None, None)
         if self._client:
@@ -192,11 +217,16 @@ class Boomberg(App):
         elif command == "MOST":
             self._show_most_active()
         elif command == "WB":
-            self._show_treasury_rates()
+            if args:
+                self._show_country_bonds(args[0])
+            else:
+                self._show_international_bonds()
         elif command == "FXIP":
             self._show_forex()
         elif command == "ECST":
             self._show_economic_stats()
+        elif command == "SNAP":
+            self._show_market_snapshot()
         elif command == "P":
             self._show_portfolio()
         elif command == "PA" and len(args) >= 3:
@@ -224,35 +254,54 @@ class Boomberg(App):
     @work(exclusive=True, group="quote")
     async def _show_quote(self, symbol: str) -> None:
         """Show quote for a symbol."""
+        import asyncio
         from boomberg.ui.widgets.quote_panel import PriceChanges
 
         try:
             self._show_loading(f"Loading quote for {symbol}...")
-            quote = await self._quote_service.get_quote(symbol)
+
+            # Fetch quote, price changes, and news in parallel
+            quote, changes_result, news_result = await asyncio.gather(
+                self._quote_service.get_quote(symbol),
+                self._client.get_stock_price_changes([symbol.upper()]),
+                self._news_service.get_symbol_news(symbol, limit=3),
+                return_exceptions=True,
+            )
+
+            # Handle quote result (raise if exception)
+            if isinstance(quote, Exception):
+                raise quote
+
             self._current_symbol = symbol.upper()
 
-            # Fetch price changes
+            # Process price changes result
             price_changes = None
-            try:
-                changes = await self._client.get_stock_price_changes([symbol.upper()])
-                if changes:
-                    pc = changes[0]
-                    price_changes = PriceChanges(
-                        change_3m=pc.three_month or 0.0,
-                        change_ytd=pc.ytd or 0.0,
-                        change_5y=pc.five_year or 0.0,
-                        change_10y=pc.ten_year or 0.0,
-                    )
-            except Exception:
-                pass  # Continue without price changes if fetch fails
+            if not isinstance(changes_result, Exception) and changes_result:
+                pc = changes_result[0]
+                price_changes = PriceChanges(
+                    change_3m=pc.three_month or 0.0,
+                    change_ytd=pc.ytd or 0.0,
+                    change_5y=pc.five_year or 0.0,
+                    change_10y=pc.ten_year or 0.0,
+                )
+
+            # Process news result
+            news = None
+            if not isinstance(news_result, Exception):
+                news = news_result
 
             quote_panel = self.query_one(QuotePanel)
-            quote_panel.update_quote(quote, price_changes)
+            quote_panel.update_quote(quote, price_changes, news=news)
             quote_panel.display = True
+
+            self._current_screen = "quote"
+            self._current_screen_args = (symbol,)
 
             self.query_one("#chart-widget").display = False
             self.query_one("#watchlist-widget").display = False
             self.query_one("#portfolio-widget").display = False
+            self.query_one("#snapshot-widget").display = False
+            self.query_one("#bonds-widget").display = False
             self.query_one("#content-scroll").display = False
         except SymbolNotFoundError as e:
             self._show_message(f"Symbol not found: {e.symbol}", error=True)
@@ -274,9 +323,14 @@ class Boomberg(App):
             chart.update_data(symbol.upper(), prices, period)
             chart.display = True
 
+            self._current_screen = "chart"
+            self._current_screen_args = (symbol, period)
+
             self.query_one(QuotePanel).display = False
             self.query_one("#watchlist-widget").display = False
             self.query_one("#portfolio-widget").display = False
+            self.query_one("#snapshot-widget").display = False
+            self.query_one("#bonds-widget").display = False
             self.query_one("#content-scroll").display = False
         except SymbolNotFoundError as e:
             self._show_message(f"Symbol not found: {e.symbol}", error=True)
@@ -527,15 +581,38 @@ class Boomberg(App):
             content = f"[bold cyan]{'Stock' if symbol else 'Market'} News[/bold cyan]\n"
             content += "=" * 50 + "\n\n"
 
+            from rich.text import Text as RichText
+            from rich.console import Group
+
+            parts = []
+            parts.append(RichText(f"{'Stock' if symbol else 'Market'} News", style="bold cyan"))
+            parts.append(RichText("=" * 50))
+            parts.append(RichText(""))
+
             for article in articles:
                 date_str = self._news_service.format_published_date(article)
-                content += f"[bold white]{article.title}[/bold white]\n"
-                content += f"[dim]{article.site} - {date_str}[/dim]\n"
-                if article.text:
-                    content += f"{self._news_service.truncate_text(article.text, 200)}\n"
-                content += "\n"
 
-            self._show_content(content)
+                # Title
+                parts.append(RichText(article.title, style="bold white"))
+
+                # Source (clickable) and date
+                if article.url:
+                    source_text = RichText(article.site, style="dim")
+                    source_text.stylize(f"link {article.url}")
+                    meta_text = RichText()
+                    meta_text.append_text(source_text)
+                    meta_text.append(f" - {date_str}", style="dim")
+                    parts.append(meta_text)
+                else:
+                    parts.append(RichText(f"{article.site} - {date_str}", style="dim"))
+
+                # Text snippet
+                if article.text:
+                    parts.append(RichText(self._news_service.truncate_text(article.text, 200)))
+
+                parts.append(RichText(""))  # Spacing
+
+            self._show_rich_content(Group(*parts))
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
         except Exception as e:
@@ -552,9 +629,14 @@ class Boomberg(App):
             watchlist.update_quotes(quotes)
             watchlist.display = True
 
+            self._current_screen = "watchlist"
+            self._current_screen_args = ()
+
             self.query_one(QuotePanel).display = False
             self.query_one("#chart-widget").display = False
             self.query_one("#portfolio-widget").display = False
+            self.query_one("#snapshot-widget").display = False
+            self.query_one("#bonds-widget").display = False
             self.query_one("#content-scroll").display = False
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
@@ -611,9 +693,14 @@ class Boomberg(App):
             portfolio_widget.update_holdings(holdings)
             portfolio_widget.display = True
 
+            self._current_screen = "portfolio"
+            self._current_screen_args = ()
+
             self.query_one(QuotePanel).display = False
             self.query_one("#chart-widget").display = False
             self.query_one("#watchlist-widget").display = False
+            self.query_one("#snapshot-widget").display = False
+            self.query_one("#bonds-widget").display = False
             self.query_one("#content-scroll").display = False
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
@@ -692,7 +779,9 @@ class Boomberg(App):
             self._show_loading("Loading world indices...")
             quotes = await self._dashboard_service.get_world_indices()
             content = self._dashboard_service.format_indices(quotes)
-            self._show_content(content)
+            self._current_screen = "wei"
+            self._current_screen_args = ()
+            self._show_content(content, title="World Equity Indices")
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
         except Exception as e:
@@ -704,8 +793,35 @@ class Boomberg(App):
         try:
             self._show_loading("Loading top news...")
             articles = await self._news_service.get_market_news(limit=15)
-            content = self._dashboard_service.format_news(articles)
-            self._show_content(content)
+
+            if not articles:
+                self._show_content("[dim]No news available.[/dim]")
+                return
+
+            from rich.text import Text as RichText
+            from rich.console import Group
+
+            parts = []
+            for article in articles:
+                # Title
+                parts.append(RichText(article.title, style="bold white"))
+
+                # Source (clickable) and date
+                date_str = self._news_service.format_published_date(article)
+                if article.site:
+                    source_text = RichText(article.site, style="dim")
+                    if article.url:
+                        source_text.stylize(f"link {article.url}")
+                    meta_text = RichText()
+                    meta_text.append_text(source_text)
+                    meta_text.append(f" - {date_str}", style="dim")
+                    parts.append(meta_text)
+                else:
+                    parts.append(RichText(date_str, style="dim"))
+
+                parts.append(RichText(""))
+
+            self._show_rich_content(Group(*parts), title="Top News Headlines")
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
         except Exception as e:
@@ -738,13 +854,72 @@ class Boomberg(App):
             self._show_message(f"Error: {str(e)}", error=True)
 
     @work(exclusive=True, group="dashboard")
+    async def _show_international_bonds(self) -> None:
+        """Show international government bond yields snapshot."""
+        try:
+            self._show_loading("Loading international bond yields...")
+            snapshot = await self._dashboard_service.get_international_bond_snapshot()
+
+            bonds_widget = self.query_one(BondsWidget)
+            bonds_widget.update_snapshot(snapshot)
+            bonds_widget.display = True
+
+            self._current_screen = "bonds"
+            self._current_screen_args = ()
+
+            self.query_one(QuotePanel).display = False
+            self.query_one("#chart-widget").display = False
+            self.query_one("#watchlist-widget").display = False
+            self.query_one("#portfolio-widget").display = False
+            self.query_one("#snapshot-widget").display = False
+            self.query_one("#content-scroll").display = False
+        except APIError as e:
+            self._show_message(f"API error: {e.message}", error=True)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
+    @work(exclusive=True, group="dashboard")
+    async def _show_country_bonds(self, country_code: str) -> None:
+        """Show government bond yields for a specific country."""
+        try:
+            self._show_loading(f"Loading bond yields for {country_code.upper()}...")
+            detail = await self._dashboard_service.get_country_bond_detail(country_code)
+            if detail is None:
+                self._show_message(
+                    f"Unknown country code: {country_code.upper()}. "
+                    "Use: US, CA, DE, UK, JP, FR, AU, IT, ES, CN",
+                    error=True,
+                )
+                return
+
+            bonds_widget = self.query_one(BondsWidget)
+            bonds_widget.update_detail(detail)
+            bonds_widget.display = True
+
+            self._current_screen = "bonds_detail"
+            self._current_screen_args = (country_code,)
+
+            self.query_one(QuotePanel).display = False
+            self.query_one("#chart-widget").display = False
+            self.query_one("#watchlist-widget").display = False
+            self.query_one("#portfolio-widget").display = False
+            self.query_one("#snapshot-widget").display = False
+            self.query_one("#content-scroll").display = False
+        except APIError as e:
+            self._show_message(f"API error: {e.message}", error=True)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
+    @work(exclusive=True, group="dashboard")
     async def _show_forex(self) -> None:
         """Show foreign exchange rates."""
         try:
             self._show_loading("Loading forex rates...")
             rates = await self._dashboard_service.get_forex_rates()
             content = self._dashboard_service.format_forex(rates)
-            self._show_content(content)
+            self._current_screen = "forex"
+            self._current_screen_args = ()
+            self._show_content(content, title="Currency ETFs")
         except APIError as e:
             self._show_message(f"API error: {e.message}", error=True)
         except Exception as e:
@@ -763,16 +938,99 @@ class Boomberg(App):
         except Exception as e:
             self._show_message(f"Error: {str(e)}", error=True)
 
-    def _show_content(self, content: str) -> None:
+    @work(exclusive=True, group="dashboard")
+    async def _show_market_snapshot(self) -> None:
+        """Show consolidated market snapshot."""
+        try:
+            self._show_loading("Loading market snapshot...")
+            snapshot = await self._dashboard_service.get_market_snapshot()
+
+            snapshot_widget = self.query_one(SnapshotWidget)
+            snapshot_widget.update_snapshot(
+                indices=snapshot.get("indices", []),
+                commodities=snapshot.get("commodities", []),
+                sectors=snapshot.get("sectors", []),
+                bonds=snapshot.get("bonds", {}),
+            )
+            snapshot_widget.display = True
+
+            self._current_screen = "snapshot"
+            self._current_screen_args = ()
+
+            self.query_one(QuotePanel).display = False
+            self.query_one("#chart-widget").display = False
+            self.query_one("#watchlist-widget").display = False
+            self.query_one("#portfolio-widget").display = False
+            self.query_one("#bonds-widget").display = False
+            self.query_one("#content-scroll").display = False
+        except APIError as e:
+            self._show_message(f"API error: {e.message}", error=True)
+        except Exception as e:
+            self._show_message(f"Error: {str(e)}", error=True)
+
+    def _refresh_current_screen(self) -> None:
+        """Refresh the currently displayed screen."""
+        if not self._current_screen:
+            return
+
+        if self._current_screen == "quote":
+            self._show_quote(self._current_screen_args[0])
+        elif self._current_screen == "chart":
+            self._show_chart(*self._current_screen_args)
+        elif self._current_screen == "watchlist":
+            self._show_watchlist()
+        elif self._current_screen == "portfolio":
+            self._show_portfolio()
+        elif self._current_screen == "snapshot":
+            self._show_market_snapshot()
+        elif self._current_screen == "wei":
+            self._show_world_indices()
+        elif self._current_screen == "forex":
+            self._show_forex()
+        elif self._current_screen == "bonds":
+            self._show_international_bonds()
+        elif self._current_screen == "bonds_detail":
+            self._show_country_bonds(self._current_screen_args[0])
+        # Skip "content" screens (static text like help, fundamentals)
+
+    def _show_content(self, content: str, title: str = "") -> None:
         """Show content in the content area."""
         self.query_one(QuotePanel).display = False
         self.query_one("#chart-widget").display = False
         self.query_one("#watchlist-widget").display = False
         self.query_one("#portfolio-widget").display = False
+        self.query_one("#snapshot-widget").display = False
+        self.query_one("#bonds-widget").display = False
+
+        # Only set to "content" if not already set by a refreshable screen
+        # (wei, forex set their screen before calling this)
+        if self._current_screen not in ("wei", "forex"):
+            self._current_screen = "content"
+            self._current_screen_args = ()
 
         content_area = self.query_one("#content-area", Static)
         content_area.update(content)
-        self.query_one("#content-scroll").display = True
+        content_scroll = self.query_one("#content-scroll")
+        content_scroll.border_title = title
+        content_scroll.display = True
+
+    def _show_rich_content(self, content, title: str = "") -> None:
+        """Show rich renderable content in the content area."""
+        self.query_one(QuotePanel).display = False
+        self.query_one("#chart-widget").display = False
+        self.query_one("#watchlist-widget").display = False
+        self.query_one("#portfolio-widget").display = False
+        self.query_one("#snapshot-widget").display = False
+        self.query_one("#bonds-widget").display = False
+
+        self._current_screen = "content"
+        self._current_screen_args = ()
+
+        content_area = self.query_one("#content-area", Static)
+        content_area.update(content)
+        content_scroll = self.query_one("#content-scroll")
+        content_scroll.border_title = title
+        content_scroll.display = True
 
     def _show_loading(self, message: str) -> None:
         """Show loading message."""
@@ -814,10 +1072,12 @@ class Boomberg(App):
   S <QUERY>       Search symbols
 
 [bold yellow]Dashboard Commands:[/bold yellow]
+  SNAP            Market Snapshot (indices, commodities, sectors, bonds)
   WEI             World Equity Indices
   TOP             Top News Headlines
   MOST            Most Active Stocks
-  WB              World Bond / Treasury Yields
+  WB              International Bond Yields (snapshot)
+  WB <CODE>       Country bond detail (US, CA, DE, UK, JP, FR, AU, IT, ES, CN)
   FXIP            Foreign Exchange Rates
   ECST            Economic Statistics (requires FRED_API_KEY)
 

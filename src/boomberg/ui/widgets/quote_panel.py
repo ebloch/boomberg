@@ -1,14 +1,15 @@
 """Quote display panel widget."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.widgets import Static
 
-from boomberg.api.models import Quote
+from boomberg.api.models import NewsArticle, Quote
 
 
 @dataclass
@@ -121,11 +122,18 @@ class QuotePanel(Static):
         super().__init__(**kwargs)
         self._quote = quote
         self._price_changes: Optional[PriceChanges] = None
+        self._news: list[NewsArticle] = []
 
-    def update_quote(self, quote: Quote, price_changes: Optional[PriceChanges] = None) -> None:
+    def update_quote(
+        self,
+        quote: Quote,
+        price_changes: Optional[PriceChanges] = None,
+        news: Optional[list[NewsArticle]] = None,
+    ) -> None:
         """Update the displayed quote."""
         self._quote = quote
         self._price_changes = price_changes
+        self._news = news[:3] if news else []
         self.remove_class("up", "down")
         if quote.change > 0:
             self.add_class("up")
@@ -188,6 +196,11 @@ class QuotePanel(Static):
         if q.exchange:
             table.add_row("Exchange", q.exchange)
 
+        # Add news section if we have news
+        if self._news:
+            renderables = [table, Text(""), self._render_news()]
+            return Group(*renderables)
+
         return table
 
     def _format_change(self, label: str, value: float) -> Text:
@@ -218,3 +231,53 @@ class QuotePanel(Static):
         if volume >= 1e3:
             return f"{volume / 1e3:.2f}K"
         return f"{volume:,}"
+
+    def _render_news(self) -> Table:
+        """Render news headlines section."""
+        table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+        table.add_column("Content", style="white")
+
+        table.add_row(Text("News", style="bold cyan"))
+
+        for article in self._news:
+            # Title
+            table.add_row(Text(article.title, style="white"))
+
+            # Source (clickable) and time
+            time_str = self._format_relative_time(article.published_date)
+            if article.url:
+                source_text = Text(article.site, style="dim")
+                source_text.stylize(f"link {article.url}")
+                meta_text = Text()
+                meta_text.append_text(source_text)
+                meta_text.append(f" - {time_str}", style="dim")
+                table.add_row(meta_text)
+            else:
+                table.add_row(Text(f"{article.site} - {time_str}", style="dim"))
+            table.add_row(Text(""))  # Spacing between articles
+
+        return table
+
+    def _format_relative_time(self, published_date: datetime) -> str:
+        """Format published date as relative time."""
+        if published_date.tzinfo is None:
+            now = datetime.utcnow()
+        else:
+            now = datetime.now(published_date.tzinfo)
+        diff = now - published_date
+
+        if diff.total_seconds() < 0:
+            return "Just now"
+
+        if diff.days == 0:
+            hours = diff.seconds // 3600
+            if hours == 0:
+                minutes = diff.seconds // 60
+                return f"{minutes}m ago" if minutes > 0 else "Just now"
+            return f"{hours}h ago"
+        elif diff.days == 1:
+            return "Yesterday"
+        elif diff.days < 7:
+            return f"{diff.days}d ago"
+        else:
+            return published_date.strftime("%b %d")

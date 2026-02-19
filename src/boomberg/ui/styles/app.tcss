@@ -118,3 +118,14 @@ Screen {
     color: $success;
     padding: 1;
 }
+
+/* Content scroll area */
+#content-scroll {
+    height: auto;
+    background: $surface;
+    border: solid $primary;
+    border-title-align: center;
+    border-title-color: cyan;
+    border-title-style: bold;
+    padding: 1;
+}

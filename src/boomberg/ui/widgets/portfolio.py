@@ -1,6 +1,9 @@
 """Portfolio widget for displaying holdings and performance."""
 
-from rich.console import RenderableType
+from datetime import datetime
+from typing import Optional
+
+from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.widgets import Static
@@ -20,6 +23,9 @@ class PortfolioWidget(Static):
         padding: 1;
         background: $surface;
         border: solid $primary;
+        border-title-align: center;
+        border-title-color: cyan;
+        border-title-style: bold;
     }
     """
 
@@ -27,10 +33,12 @@ class PortfolioWidget(Static):
         super().__init__(**kwargs)
         self._holdings: list[PortfolioHolding] = []
         self._empty_message = "Portfolio is empty. Use 'PA <SYMBOL> <SHARES> <TOTAL_COST>' to add holdings."
+        self._last_updated: Optional[datetime] = None
 
     def update_holdings(self, holdings: list[PortfolioHolding]) -> None:
         """Update the displayed holdings."""
         self._holdings = holdings
+        self._last_updated = datetime.now()
         self.refresh()
 
     def set_empty_message(self, message: str) -> None:
@@ -39,12 +47,12 @@ class PortfolioWidget(Static):
 
     def render(self) -> RenderableType:
         """Render the portfolio."""
+        self.border_title = "Portfolio"
+
         if not self._holdings:
             return Text(self._empty_message, style="dim italic")
 
         table = Table(
-            title="Portfolio",
-            title_style="bold cyan",
             box=None,
             padding=(0, 1),
             expand=True,
@@ -102,4 +110,10 @@ class PortfolioWidget(Static):
                 Text(ytd_text, style=ytd_style),
             )
 
-        return table
+        sections = [table]
+        if self._last_updated:
+            updated_time = self._last_updated.strftime("%I:%M %p")
+            sections.append(Text(""))
+            sections.append(Text(f"Last updated: {updated_time} | P to refresh", style="dim"))
+
+        return Group(*sections)

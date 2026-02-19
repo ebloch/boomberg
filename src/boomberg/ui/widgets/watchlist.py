@@ -1,9 +1,10 @@
 """Watchlist widget for displaying multiple quotes."""
 
 from dataclasses import dataclass
-from typing import Union
+from datetime import datetime
+from typing import Optional, Union
 
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.message import Message
@@ -25,6 +26,9 @@ class WatchlistWidget(Static):
         padding: 1;
         background: $surface;
         border: solid $primary;
+        border-title-align: center;
+        border-title-color: cyan;
+        border-title-style: bold;
     }
 
     WatchlistWidget .watchlist-header {
@@ -44,10 +48,12 @@ class WatchlistWidget(Static):
         self._name = name
         self._quotes: list[Union[Quote, WatchlistQuote]] = []
         self._empty_message = "Watchlist is empty. Use 'WA <SYMBOL>' to add symbols."
+        self._last_updated: Optional[datetime] = None
 
     def update_quotes(self, quotes: list[Union[Quote, WatchlistQuote]]) -> None:
         """Update the displayed quotes."""
         self._quotes = quotes
+        self._last_updated = datetime.now()
         self.refresh()
 
     def set_empty_message(self, message: str) -> None:
@@ -56,12 +62,12 @@ class WatchlistWidget(Static):
 
     def render(self) -> RenderableType:
         """Render the watchlist."""
+        self.border_title = self._name
+
         if not self._quotes:
             return Text(self._empty_message, style="dim italic")
 
         table = Table(
-            title=self._name,
-            title_style="bold cyan",
             box=None,
             padding=(0, 1),
             expand=True,
@@ -104,7 +110,13 @@ class WatchlistWidget(Static):
                 self._format_volume(quote.volume),
             )
 
-        return table
+        sections = [table]
+        if self._last_updated:
+            updated_time = self._last_updated.strftime("%I:%M %p")
+            sections.append(Text(""))
+            sections.append(Text(f"Last updated: {updated_time} | W to refresh", style="dim"))
+
+        return Group(*sections)
 
     def _format_change(self, value: float) -> Text:
         """Format a percentage change with color."""
