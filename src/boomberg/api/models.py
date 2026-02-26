@@ -21,7 +21,7 @@ class Quote(BaseModel):
     year_low: float = Field(default=0.0, alias="yearLow")
     year_high: float = Field(default=0.0, alias="yearHigh")
     market_cap: Optional[float] = Field(default=None, alias="marketCap")
-    volume: int = Field(default=0)
+    volume: float = Field(default=0.0)
     avg_volume: int = Field(default=0, alias="avgVolume")
     open: float = Field(default=0.0, alias="open")
     previous_close: float = Field(default=0.0, alias="previousClose")
@@ -41,7 +41,7 @@ class HistoricalPrice(BaseModel):
     high: float
     low: float
     close: float
-    volume: int
+    volume: float
     adj_close: Optional[float] = Field(default=None, alias="adjClose")
 
 
